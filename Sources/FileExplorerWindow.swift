@@ -10,6 +10,10 @@ class FileExplorerWindow: NSObject, NSWindowDelegate {
     var backStack: [URL] = []
     var forwardStack: [URL] = []
 
+    // File system watcher
+    private var watchSource: DispatchSourceFileSystemObject?
+    private var watchFD: Int32 = -1
+
     init(directory: URL) {
         currentDirectory = directory
         sidebarVC = SidebarViewController()
@@ -79,6 +83,33 @@ class FileExplorerWindow: NSObject, NSWindowDelegate {
         mainVC.upBtn.isEnabled = url.path != "/"
         sidebarVC.selectItem(for: url)
         updateStatus()
+        watchDirectory(url)
+    }
+
+    // MARK: - File System Watcher
+
+    private func watchDirectory(_ url: URL) {
+        stopWatching()
+        let fd = open(url.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        watchFD = fd
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd, eventMask: .write, queue: .main
+        )
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.contentVC.loadDirectory(self.currentDirectory)
+            self.updateStatus()
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        watchSource = source
+    }
+
+    private func stopWatching() {
+        watchSource?.cancel()
+        watchSource = nil
+        watchFD = -1
     }
 
     func goBack() {
@@ -130,6 +161,7 @@ class FileExplorerWindow: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         // Don't let AppKit run window.close() — its internal
         // _NSWindowTransformAnimation crashes on freed layer objects.
+        stopWatching()
         contentVC.prepareForClose()
         window.orderOut(nil)
         window.delegate = nil
